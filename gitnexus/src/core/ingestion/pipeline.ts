@@ -856,7 +856,7 @@ export const runPipelineFromRepo = async (
 
       let symbolCount = 0;
       graph.forEachNode(n => { if (n.label !== 'File') symbolCount++; });
-      const dynamicMaxProcesses = Math.max(20, Math.min(300, Math.round(symbolCount / 10)));
+      const dynamicMaxProcesses = Math.max(20, Math.min(3000, Math.round(symbolCount / 10)));
 
       processResult = await processProcesses(
         graph,

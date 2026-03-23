@@ -292,43 +292,63 @@ const createCommunityNodes = (
 /**
  * Generate a human-readable label from the most common folder name in the community
  */
+const GENERIC_DIRS = new Set([
+  'src', 'lib', 'core', 'utils', 'util', 'common', 'shared', 'helpers', 'helper',
+  'main', 'java', 'kotlin', 'test', 'androidtest', 'res', 'resources',
+  'impl', 'internal', 'api', 'base', 'app', 'build', 'generated',
+  'cn', 'com', 'org', 'wps', 'moffice', 'android',
+]);
+
 const generateHeuristicLabel = (
   memberIds: string[],
   nodePathMap: Map<string, string>,
   graph: any,
   commNum: number
 ): string => {
-  // Collect folder names from file paths
   const folderCounts = new Map<string, number>();
+  const moduleCounts = new Map<string, number>();
   
   memberIds.forEach(nodeId => {
     const filePath = nodePathMap.get(nodeId) || '';
     const parts = filePath.split('/').filter(Boolean);
     
-    // Get the most specific folder (parent directory)
-    if (parts.length >= 2) {
-      const folder = parts[parts.length - 2];
-      // Skip generic folder names
-      if (!['src', 'lib', 'core', 'utils', 'common', 'shared', 'helpers'].includes(folder.toLowerCase())) {
+    // Track module name (first path component, e.g. "kprivilege-cn")
+    if (parts.length >= 1) {
+      const mod = parts[0];
+      moduleCounts.set(mod, (moduleCounts.get(mod) || 0) + 1);
+    }
+    
+    // Look at multiple directory levels, skip generic ones
+    for (let i = parts.length - 2; i >= 0; i--) {
+      const folder = parts[i];
+      if (!GENERIC_DIRS.has(folder.toLowerCase()) && folder.length > 2) {
         folderCounts.set(folder, (folderCounts.get(folder) || 0) + 1);
+        break;
       }
     }
   });
 
-  // Find most common folder
   let maxCount = 0;
   let bestFolder = '';
-  
   folderCounts.forEach((count, folder) => {
-    if (count > maxCount) {
-      maxCount = count;
-      bestFolder = folder;
-    }
+    if (count > maxCount) { maxCount = count; bestFolder = folder; }
   });
 
+  // Get dominant module for prefix
+  let bestModule = '';
+  let maxModCount = 0;
+  moduleCounts.forEach((count, mod) => {
+    if (count > maxModCount) { maxModCount = count; bestModule = mod; }
+  });
+  const modulePrefix = bestModule && moduleCounts.size <= 3
+    ? bestModule.replace(/-/g, ' ').split(' ')[0].charAt(0).toUpperCase() + bestModule.replace(/-/g, ' ').split(' ')[0].slice(1)
+    : '';
+
   if (bestFolder) {
-    // Capitalize first letter
-    return bestFolder.charAt(0).toUpperCase() + bestFolder.slice(1);
+    const label = bestFolder.charAt(0).toUpperCase() + bestFolder.slice(1);
+    return modulePrefix && modulePrefix.toLowerCase() !== label.toLowerCase()
+      ? `${modulePrefix}/${label}`
+      : label;
   }
 
   // Fallback: use function names to detect patterns
@@ -338,16 +358,15 @@ const generateHeuristicLabel = (
     if (name) names.push(name);
   });
 
-  // Look for common prefixes
   if (names.length > 2) {
     const commonPrefix = findCommonPrefix(names);
     if (commonPrefix.length > 2) {
-      return commonPrefix.charAt(0).toUpperCase() + commonPrefix.slice(1);
+      const label = commonPrefix.charAt(0).toUpperCase() + commonPrefix.slice(1);
+      return modulePrefix ? `${modulePrefix}/${label}` : label;
     }
   }
 
-  // Last resort: generic name with community ID for uniqueness
-  return `Cluster_${commNum}`;
+  return modulePrefix ? `${modulePrefix}/Cluster_${commNum}` : `Cluster_${commNum}`;
 };
 
 /**

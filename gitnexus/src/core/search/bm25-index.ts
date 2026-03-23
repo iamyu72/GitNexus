@@ -58,7 +58,23 @@ async function queryFTSViaExecutor(
  * @param repoId - If provided, queries will be routed via the MCP connection pool
  * @returns Ranked search results from FTS indexes
  */
+// Expand query by splitting camelCase/PascalCase and snake_case tokens
+const expandQuery = (query: string): string => {
+  const words = query.split(/\s+/);
+  const expanded = new Set<string>();
+  for (const w of words) {
+    expanded.add(w);
+    // Split camelCase: "RetryableHttpExecutor" → ["Retryable", "Http", "Executor"]
+    const camelParts = w.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2').split(/\s+/);
+    for (const p of camelParts) expanded.add(p.toLowerCase());
+    // Split snake_case
+    for (const p of w.split('_')) if (p) expanded.add(p.toLowerCase());
+  }
+  return Array.from(expanded).join(' ');
+};
+
 export const searchFTSFromLbug = async (query: string, limit: number = 20, repoId?: string): Promise<BM25SearchResult[]> => {
+  query = expandQuery(query);
   let fileResults: any[], functionResults: any[], classResults: any[], methodResults: any[], interfaceResults: any[];
 
   if (repoId) {

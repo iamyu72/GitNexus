@@ -1435,6 +1435,8 @@ export class LocalBackend {
     await this.ensureInitialized(repo.id);
     
     const { target, direction } = params;
+    // Support uid-based targeting: if target looks like a uid (contains ':' and '/'), resolve by id
+    const isUid = target.includes(':') && target.includes('/');
     const maxDepth = params.maxDepth || 3;
     const rawRelTypes = params.relationTypes && params.relationTypes.length > 0
       ? params.relationTypes.filter(t => VALID_RELATION_TYPES.has(t))
@@ -1446,20 +1448,63 @@ export class LocalBackend {
     const relTypeFilter = relationTypes.map(t => `'${t}'`).join(', ');
     const confidenceFilter = minConfidence > 0 ? ` AND r.confidence >= ${minConfidence}` : '';
 
-    const targets = await executeParameterized(repo.id, `
-      MATCH (n)
-      WHERE n.name = $targetName
-      RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
-      LIMIT 1
-    `, { targetName: target });
-    if (targets.length === 0) return { error: `Target '${target}' not found` };
+    const allTargets = isUid
+      ? await executeParameterized(repo.id, `
+        MATCH (n)
+        WHERE n.id = $targetName
+        RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
+        LIMIT 1
+      `, { targetName: target })
+      : await executeParameterized(repo.id, `
+        MATCH (n)
+        WHERE n.name = $targetName
+        RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
+        LIMIT 20
+      `, { targetName: target });
+    if (allTargets.length === 0) return { error: `Target '${target}' not found` };
+    if (allTargets.length > 1) {
+      const candidates = allTargets.map((t: any) => ({
+        uid: t.id || t[0],
+        name: t.name || t[1],
+        type: t.type || t[2],
+        filePath: t.filePath || t[3],
+      }));
+      return {
+        status: 'ambiguous',
+        message: `Found ${allTargets.length} symbols named '${target}'. Use --target with a uid for precision.`,
+        candidates,
+        hint: `Example: gitnexus impact "${candidates[0].uid}" --direction ${direction}`,
+      };
+    }
     
-    const sym = targets[0];
+    const sym = allTargets[0];
     const symId = sym.id || sym[0];
+    const symType = sym.type || sym[2] || '';
+    // Derive type from id prefix (e.g. "Class:path/File.java:Name" → "Class")
+    const symTypeFromId = symId.split(':')[0] || '';
+    const effectiveType = symType || symTypeFromId;
     
     const impacted: any[] = [];
     const visited = new Set<string>([symId]);
     let frontier = [symId];
+
+    // Auto-expand: when target is a Class/Interface/Struct, include its methods
+    // and properties in the initial frontier so upstream callers are found.
+    if (direction === 'upstream' && /^(Class|Interface|Struct|Enum|Record)$/i.test(effectiveType)) {
+      try {
+        const members = await executeQuery(repo.id,
+          `MATCH (c)-[r:CodeRelation]->(m) WHERE c.id = '${symId.replace(/'/g, "''")}' AND r.type IN ['HAS_METHOD', 'HAS_PROPERTY'] RETURN m.id AS id, m.name AS name, labels(m)[0] AS type, m.filePath AS filePath`
+        );
+        for (const mem of members) {
+          const memId = (mem as any).id || (mem as any)[0];
+          if (!visited.has(memId)) {
+            visited.add(memId);
+            frontier.push(memId);
+          }
+        }
+      } catch { /* ignore member expansion failures */ }
+    }
+
     let traversalComplete = true;
     
     for (let depth = 1; depth <= maxDepth && frontier.length > 0; depth++) {

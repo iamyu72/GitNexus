@@ -259,8 +259,29 @@ const verifyConstructorBindings = (
         }
       }
 
-      if (callableDefs && callableDefs.length === 1 && callableDefs[0].returnType) {
-        const typeName = extractReturnTypeName(callableDefs[0].returnType);
+      if (callableDefs && callableDefs.length === 1) {
+        let typeName: string | undefined;
+        if (callableDefs[0].returnType) {
+          typeName = extractReturnTypeName(callableDefs[0].returnType);
+        }
+        // Heuristic: infer type from naming conventions when returnType is missing.
+        // Common Android/Java patterns: getUser→User, getInstance→owner class,
+        // createPayment→Payment, buildConfig→Config, newInstance→owner class
+        if (!typeName && callableDefs[0].ownerId) {
+          const ownerNode = graph?.getNode(callableDefs[0].ownerId);
+          const ownerName = ownerNode?.properties?.name as string | undefined;
+          const m = calleeName.match(/^(?:get|create|build|new)([A-Z]\w+)$/);
+          if (m) {
+            const candidate = m[1];
+            const resolved = ctx.resolve(candidate, filePath);
+            if (resolved?.candidates.some(d => d.type === 'Class' || d.type === 'Interface')) {
+              typeName = candidate;
+            }
+          }
+          if (!typeName && /^(?:getInstance|newInstance|of|from|create)$/.test(calleeName) && ownerName) {
+            typeName = ownerName;
+          }
+        }
         if (typeName) {
           verified.set(receiverKey(scope, varName), typeName);
         }
@@ -701,9 +722,10 @@ const filterCallableCandidates = (
 const toResolveResult = (
   definition: SymbolDefinition,
   tier: ResolutionTier,
+  confidenceOverride?: number,
 ): ResolveResult => ({
   nodeId: definition.nodeId,
-  confidence: TIER_CONFIDENCE[tier],
+  confidence: confidenceOverride !== undefined ? confidenceOverride : TIER_CONFIDENCE[tier],
   reason: tier === 'same-file' ? 'same-file' : tier === 'import-scoped' ? 'import-resolved' : 'global',
   returnType: definition.returnType,
 });
@@ -905,6 +927,13 @@ const resolveCallTarget = (
   }
 
   if (filteredCandidates.length !== 1) return null;
+
+  // Penalty: member calls with unknown receiver type get reduced confidence.
+  // Short method names (<=3 chars) without receiver type are highly ambiguous.
+  if (call.callForm === 'member' && !call.receiverTypeName) {
+    const penalty = call.calledName.length <= 3 ? 0.4 : 0.65;
+    return toResolveResult(filteredCandidates[0], tiered.tier, Math.min(TIER_CONFIDENCE[tiered.tier], penalty));
+  }
 
   return toResolveResult(filteredCandidates[0], tiered.tier);
 };

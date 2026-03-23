@@ -160,7 +160,22 @@ export const processProcesses = async (
     const terminalNode = nodeMap.get(terminalId);
     const entryName = entryNode?.properties.name || 'Unknown';
     const terminalName = terminalNode?.properties.name || 'Unknown';
-    const heuristicLabel = `${capitalize(entryName)} → ${capitalize(terminalName)}`;
+    // Include class/file context for clarity: "ClassName.method → ClassName.method"
+    const entryFile = (entryNode?.properties.filePath as string) || '';
+    const terminalFile = (terminalNode?.properties.filePath as string) || '';
+    const getClassName = (fp: string): string => {
+      const base = fp.split('/').pop() || '';
+      return base.replace(/\.(java|kt|ts|js|py|rb|go|rs)$/, '');
+    };
+    const entryClass = getClassName(entryFile);
+    const terminalClass = getClassName(terminalFile);
+    const entryLabel = entryClass && entryClass !== entryName
+      ? `${entryClass}.${entryName}`
+      : capitalize(entryName);
+    const terminalLabel = terminalClass && terminalClass !== terminalName
+      ? `${terminalClass}.${terminalName}`
+      : capitalize(terminalName);
+    const heuristicLabel = `${entryLabel} → ${terminalLabel}`;
     
     const processId = `proc_${idx}_${sanitizeId(entryName)}`;
     
